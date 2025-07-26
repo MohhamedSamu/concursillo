@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import pusherClient, { GAME_EVENTS, getGameChannel } from '@/lib/pusher';
+import WildCardDisplay from '@/components/WildCardDisplay';
 
 export default function PlayPage() {
   const params = useParams();
@@ -15,6 +16,31 @@ export default function PlayPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [gameEnded, setGameEnded] = useState(false);
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
+  const [wildCardResult, setWildCardResult] = useState<any>(null);
+  const [wrongAnswers, setWrongAnswers] = useState<string[]>([]);
+
+  const reloadPlayerData = async () => {
+    try {
+      const playerName = sessionStorage.getItem(`current_player_name_${params.id}`);
+      const storageKey = `game_${params.id}_player_${playerName}_id`;
+      const playerId = localStorage.getItem(storageKey);
+      
+      if (playerId) {
+        const { data: playerData, error: playerError } = await supabase
+          .from('players')
+          .select('*')
+          .eq('id', playerId)
+          .single();
+
+        if (!playerError && playerData) {
+          console.log('Reloaded player data:', playerData);
+          setPlayer(playerData);
+        }
+      }
+    } catch (error) {
+      console.error('Error reloading player data:', error);
+    }
+  };
 
   useEffect(() => {
     // Get the player name from sessionStorage
@@ -51,9 +77,15 @@ export default function PlayPage() {
     const channel = pusherClient.subscribe(playerChannel);
     setupPusherSubscription(playerId, playerChannel);
 
+    // Set up periodic reload of player data to keep wild card status updated
+    const interval = setInterval(() => {
+      reloadPlayerData();
+    }, 2000); // Reload every 2 seconds to match display screen
+
     return () => {
       console.log('Unsubscribing from channel:', playerChannel);
       pusherClient.unsubscribe(playerChannel);
+      clearInterval(interval);
     };
   }, [params.id]);
 
@@ -184,9 +216,10 @@ export default function PlayPage() {
         correct_answer_letter: currentGameQuestion.correct_answer_letter
       };
 
-      // If it's a new question or hidden phase, reset selected answer
+      // If it's a new question or hidden phase, reset selected answer and wrong answers
       if (gameRoomData.current_question?.id !== currentQuestion?.id || data.phase === 'hidden') {
         setSelectedAnswer(null);
+        setWrongAnswers([]);
       }
 
       setGameRoom(gameRoomData);
@@ -202,6 +235,26 @@ export default function PlayPage() {
       if (!playerError && playerData) {
         console.log('Updated player data:', playerData);
         setPlayer(playerData);
+        
+        // Ensure selected answer is preserved during locked and reveal phases
+        if ((data.phase === 'locked' || data.phase === 'reveal') && playerData.current_answer) {
+          console.log('Setting selected answer from player data:', playerData.current_answer);
+          setSelectedAnswer(playerData.current_answer);
+        }
+        
+        // Debug logging for reveal phase
+        if (data.phase === 'reveal') {
+          console.log('Reveal phase - Current state:', {
+            selectedAnswer,
+            playerCurrentAnswer: playerData.current_answer,
+            gamePhase: data.phase
+          });
+        }
+      } else {
+        // If we can't get player data, try to preserve the current selected answer during reveal
+        if (data.phase === 'reveal' && selectedAnswer) {
+          console.log('Preserving current selected answer during reveal:', selectedAnswer);
+        }
       }
     });
 
@@ -221,7 +274,85 @@ export default function PlayPage() {
         setLeaderboard(leaderboardData);
       }
     });
+
+    // Handle wild card results
+    channel.bind(GAME_EVENTS.WILD_CARD_RESULT, (data: any) => {
+      console.log('Wild card result received for player:', playerId, data);
+      setWildCardResult(data);
+      
+      // Handle wrong answers from 50/50 and roulette
+      if (data.type === 'fifty_fifty' || data.type === 'roulette') {
+        if (data.wrongAnswers) {
+          console.log('Setting wrong answers:', data.wrongAnswers);
+          setWrongAnswers(data.wrongAnswers);
+        }
+      }
+      
+      // Handle wild card revival
+      if (data.type === 'wild_card_revived') {
+        console.log('Wild card revived:', data.wildCardType);
+        // Clear wrong answers if the revived wild card was 50/50 or roulette
+        if (data.wildCardType === 'fifty_fifty' || data.wildCardType === 'roulette') {
+          setWrongAnswers([]);
+        }
+        // Show a brief notification to the player
+        setTimeout(() => {
+          console.log(`¡Tu comodín ${data.wildCardType === 'fifty_fifty' ? '50/50' : data.wildCardType === 'roulette' ? 'Ruleta' : data.wildCardType} ha sido revivido!`);
+        }, 100);
+      }
+      
+      // Handle phone call and search completion
+      if (data.type === 'phone_call' || data.type === 'phone_search') {
+        if (data.completed) {
+          console.log(`${data.type} wildcard completed`);
+          // Show a brief notification to the player
+          setTimeout(() => {
+            console.log(`¡Tiempo de ${data.type === 'phone_call' ? 'llamada telefónica' : 'búsqueda en internet'} terminado!`);
+          }, 100);
+        }
+      }
+      
+      // Reload player data immediately to get updated wild card status
+      reloadPlayerData();
+    });
   }
+
+  const getAnswerButtonStyle = (answerLetter: string) => {
+    const isSelected = selectedAnswer === currentQuestion[`answer_${answerLetter.toLowerCase()}`];
+    const isCorrect = gameRoom.current_phase === 'reveal' && currentQuestion.correct_answer_letter === answerLetter;
+    const isWrongAnswer = wrongAnswers.includes(answerLetter);
+    
+    // During reveal phase, also check player's current answer from database
+    const playerSelectedAnswer = gameRoom.current_phase === 'reveal' && player?.current_answer;
+    const isPlayerSelected = playerSelectedAnswer === currentQuestion[`answer_${answerLetter.toLowerCase()}`];
+    
+    // Debug logging for reveal phase
+    if (gameRoom.current_phase === 'reveal') {
+      console.log(`Answer ${answerLetter}:`, {
+        answerText: currentQuestion[`answer_${answerLetter.toLowerCase()}`],
+        isSelected,
+        selectedAnswer,
+        playerSelectedAnswer,
+        isPlayerSelected,
+        isCorrect,
+        isWrongAnswer,
+        correctAnswer: currentQuestion.correct_answer_letter
+      });
+    }
+    
+    // During reveal phase, prioritize showing correct answer and player's wrong choice
+    if (gameRoom.current_phase === 'reveal') {
+      if (isCorrect) return 'bg-green-500 text-white';
+      if ((isSelected || isPlayerSelected) && !isCorrect) return 'bg-red-500 text-white'; // Player's wrong choice
+      if (isWrongAnswer) return 'bg-red-500 text-white';
+      return 'bg-gray-100';
+    }
+    
+    // During other phases, show normal selection state
+    if (isSelected) return 'bg-blue-500 text-white';
+    if (isWrongAnswer) return 'bg-red-500 text-white';
+    return 'bg-gray-100 hover:bg-gray-200';
+  };
 
   async function handleAnswerSelect(answer: string) {
     if (!player || !gameRoom || gameRoom.current_phase === 'locked') return;
@@ -337,6 +468,16 @@ export default function PlayPage() {
           <p className="text-lg">Puntuación: {player.score}</p>
         </div>
 
+        {/* Wild Card Display */}
+        <div className="mb-6">
+          <WildCardDisplay 
+            playerId={player.id}
+            gameId={params.id as string}
+            playerData={player}
+            onWildCardResult={setWildCardResult}
+          />
+        </div>
+
         {gameRoom.current_phase === 'waiting' && (
           <div className="text-center py-8">
             <p className="text-xl">Esperando a que comience el juego...</p>
@@ -357,13 +498,7 @@ export default function PlayPage() {
               gameRoom.current_phase === 'locked' || gameRoom.current_phase === 'reveal') && (
               <div className="space-y-4">
                 <button
-                  className={`w-full p-4 text-left rounded ${
-                    selectedAnswer === currentQuestion.answer_a
-                      ? 'bg-blue-500 text-white'
-                      : gameRoom.current_phase === 'reveal' && currentQuestion.correct_answer_letter === 'A'
-                      ? 'bg-green-500 text-white'
-                      : 'bg-gray-100 hover:bg-gray-200'
-                  }`}
+                  className={`w-full p-4 text-left rounded ${getAnswerButtonStyle('A')}`}
                   onClick={() => handleAnswerSelect(currentQuestion.answer_a)}
                   disabled={gameRoom.current_phase === 'locked' || gameRoom.current_phase === 'reveal'}
                 >
@@ -374,13 +509,7 @@ export default function PlayPage() {
                   gameRoom.current_phase === 'answer_d' || gameRoom.current_phase === 'locked' || 
                   gameRoom.current_phase === 'reveal') && (
                   <button
-                    className={`w-full p-4 text-left rounded ${
-                      selectedAnswer === currentQuestion.answer_b
-                        ? 'bg-blue-500 text-white'
-                        : gameRoom.current_phase === 'reveal' && currentQuestion.correct_answer_letter === 'B'
-                        ? 'bg-green-500 text-white'
-                        : 'bg-gray-100 hover:bg-gray-200'
-                    }`}
+                    className={`w-full p-4 text-left rounded ${getAnswerButtonStyle('B')}`}
                     onClick={() => handleAnswerSelect(currentQuestion.answer_b)}
                     disabled={gameRoom.current_phase === 'locked' || gameRoom.current_phase === 'reveal'}
                   >
@@ -391,13 +520,7 @@ export default function PlayPage() {
                 {(gameRoom.current_phase === 'answer_c' || gameRoom.current_phase === 'answer_d' || 
                   gameRoom.current_phase === 'locked' || gameRoom.current_phase === 'reveal') && (
                   <button
-                    className={`w-full p-4 text-left rounded ${
-                      selectedAnswer === currentQuestion.answer_c
-                        ? 'bg-blue-500 text-white'
-                        : gameRoom.current_phase === 'reveal' && currentQuestion.correct_answer_letter === 'C'
-                        ? 'bg-green-500 text-white'
-                        : 'bg-gray-100 hover:bg-gray-200'
-                    }`}
+                    className={`w-full p-4 text-left rounded ${getAnswerButtonStyle('C')}`}
                     onClick={() => handleAnswerSelect(currentQuestion.answer_c)}
                     disabled={gameRoom.current_phase === 'locked' || gameRoom.current_phase === 'reveal'}
                   >
@@ -408,13 +531,7 @@ export default function PlayPage() {
                 {(gameRoom.current_phase === 'answer_d' || gameRoom.current_phase === 'locked' || 
                   gameRoom.current_phase === 'reveal') && (
                   <button
-                    className={`w-full p-4 text-left rounded ${
-                      selectedAnswer === currentQuestion.answer_d
-                        ? 'bg-blue-500 text-white'
-                        : gameRoom.current_phase === 'reveal' && currentQuestion.correct_answer_letter === 'D'
-                        ? 'bg-green-500 text-white'
-                        : 'bg-gray-100 hover:bg-gray-200'
-                    }`}
+                    className={`w-full p-4 text-left rounded ${getAnswerButtonStyle('D')}`}
                     onClick={() => handleAnswerSelect(currentQuestion.answer_d)}
                     disabled={gameRoom.current_phase === 'locked' || gameRoom.current_phase === 'reveal'}
                   >

@@ -18,9 +18,15 @@ export default function DisplayView({ params }: { params: { id: string } }) {
     const displayChannel = `${getGameChannel(params.id)}_display`;
     setupPusherSubscription(displayChannel);
 
+    // Set up periodic reload of players to keep wild card status updated
+    const interval = setInterval(() => {
+      reloadPlayers();
+    }, 2000); // Reload every 2 seconds
+
     return () => {
       const displayChannel = `${getGameChannel(params.id)}_display`;
       pusherClient.unsubscribe(displayChannel);
+      clearInterval(interval);
     };
   }, [params.id]);
 
@@ -178,6 +184,21 @@ export default function DisplayView({ params }: { params: { id: string } }) {
     }
   }
 
+  async function reloadPlayers() {
+    try {
+      const { data: playersData, error: playersError } = await supabase
+        .from('players')
+        .select('*')
+        .eq('game_room_id', params.id)
+        .order('score', { ascending: false });
+
+      if (playersError) throw playersError;
+      setPlayers(playersData || []);
+    } catch (err) {
+      console.error('Error reloading players:', err);
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-black text-white">
@@ -264,8 +285,24 @@ export default function DisplayView({ params }: { params: { id: string } }) {
         <h3 className="text-lg font-bold mb-2">Puntuaciones</h3>
         <div className="space-y-2">
           {players.map(player => (
-            <div key={player.id} className="flex justify-between">
-              <span>{player.name}</span>
+            <div key={player.id} className="flex justify-between items-center">
+              <div className="flex items-center">
+                <span>{player.name}</span>
+                <div className="ml-2 flex gap-1">
+                  {!player.phone_call_available && (
+                    <span className="text-xs bg-red-600 text-white px-1 rounded">📞</span>
+                  )}
+                  {!player.phone_search_available && (
+                    <span className="text-xs bg-red-600 text-white px-1 rounded">🔍</span>
+                  )}
+                  {!player.fifty_fifty_available && (
+                    <span className="text-xs bg-red-600 text-white px-1 rounded">50:50</span>
+                  )}
+                  {!player.roulette_available && (
+                    <span className="text-xs bg-red-600 text-white px-1 rounded">🎰</span>
+                  )}
+                </div>
+              </div>
               <span className="ml-4 font-bold">{player.score}</span>
             </div>
           ))}

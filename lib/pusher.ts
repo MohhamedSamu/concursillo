@@ -15,6 +15,8 @@ export const GAME_EVENTS = {
   ANSWER_SUBMITTED: 'answer-submitted',
   GAME_STARTED: 'game-started',
   GAME_ENDED: 'game-ended',
+  WILD_CARD_ACTIVATED: 'wild-card-activated',
+  WILD_CARD_RESULT: 'wild-card-result',
 } as const;
 
 // Channel naming helper

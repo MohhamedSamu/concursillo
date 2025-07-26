@@ -75,6 +75,19 @@ export interface Player {
   name: string;
   score: number;
   status: string;
+  // Wild card availability
+  phone_call_available: boolean;
+  phone_search_available: boolean;
+  fifty_fifty_available: boolean;
+  roulette_available: boolean;
+  // Wild card usage tracking
+  phone_call_used_at: string | null;
+  phone_search_used_at: string | null;
+  fifty_fifty_used_at: string | null;
+  roulette_used_at: string | null;
+  // Wild card results
+  fifty_fifty_wrong_answers: string[] | null;
+  roulette_wrong_answers: string[] | null;
   created_at: string;
   updated_at: string;
 } 

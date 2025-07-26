@@ -416,14 +416,14 @@ export default function QuestionnaireEditor({ params }: { params: { id: string }
               )}
             </div>
 
-            {questions.length >= 15 ? (
+            {questions.length >= 20 ? (
               <div className="bg-yellow-50 border border-yellow-400 text-yellow-700 p-4 rounded mb-8">
-                Has alcanzado el límite de 15 preguntas.
+                Has alcanzado el límite de 20 preguntas.
               </div>
             ) : null}
 
             {/* Add Question Form */}
-            {!isEditing && questions.length < 15 && (
+            {!isEditing && questions.length < 20 && (
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700">

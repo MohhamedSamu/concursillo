@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import pusherClient, { GAME_EVENTS, getGameChannel } from '@/lib/pusher';
+import WildCardManager from '@/components/WildCardManager';
 
 export default function HostControlPanel({ params }: { params: { id: string } }) {
   interface GameRoom {
@@ -17,6 +18,19 @@ export default function HostControlPanel({ params }: { params: { id: string } })
     name: string;
     current_answer: string | null;
     score: number;
+    // Wild card availability
+    phone_call_available: boolean;
+    phone_search_available: boolean;
+    fifty_fifty_available: boolean;
+    roulette_available: boolean;
+    // Wild card usage tracking
+    phone_call_used_at: string | null;
+    phone_search_used_at: string | null;
+    fifty_fifty_used_at: string | null;
+    roulette_used_at: string | null;
+    // Wild card results
+    fifty_fifty_wrong_answers: string[] | null;
+    roulette_wrong_answers: string[] | null;
     [key: string]: any;
   }
 
@@ -32,6 +46,13 @@ export default function HostControlPanel({ params }: { params: { id: string } })
   useEffect(() => {
     loadGameData();
     setupPusherSubscription();
+    
+    // Set up periodic reload of players to keep wild card status updated
+    const interval = setInterval(() => {
+      reloadPlayers();
+    }, 2000); // Reload every 2 seconds
+
+    return () => clearInterval(interval);
   }, [params.id]);
 
   function setupPusherSubscription() {
@@ -318,6 +339,21 @@ export default function HostControlPanel({ params }: { params: { id: string } })
       setError(err instanceof Error ? err.message : 'Error loading game data');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function reloadPlayers() {
+    try {
+      const { data: playersData, error: playersError } = await supabase
+        .from('players')
+        .select('*')
+        .eq('game_room_id', params.id)
+        .order('score', { ascending: false });
+
+      if (playersError) throw playersError;
+      setPlayers(playersData || []);
+    } catch (err) {
+      console.error('Error reloading players:', err);
     }
   }
 
@@ -922,18 +958,47 @@ export default function HostControlPanel({ params }: { params: { id: string } })
                   key={player.id}
                   className="flex items-center justify-between bg-gray-50 p-3 rounded-lg"
                 >
-                  <div>
-                    <span className="font-medium">{player.name}</span>
-                    <span className="ml-4 text-gray-500">
-                      {player.current_answer ? `Respuesta: ${player.current_answer}` : 'Sin responder'}
-                    </span>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-medium">{player.name}</span>
+                      <span className="font-bold">{player.score} puntos</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-500 text-sm">
+                        {player.current_answer ? `Respuesta: ${player.current_answer}` : 'Sin responder'}
+                      </span>
+                      <div className="flex gap-1">
+                        {!player.phone_call_available && (
+                          <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded">📞</span>
+                        )}
+                        {!player.phone_search_available && (
+                          <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded">🔍</span>
+                        )}
+                        {!player.fifty_fifty_available && (
+                          <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded">50:50</span>
+                        )}
+                        {!player.roulette_available && (
+                          <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded">🎰</span>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                  <span className="font-bold">{player.score} puntos</span>
                 </div>
               ))}
             </div>
           )}
         </div>
+
+        {/* Wild Card Manager */}
+        {players.length > 0 && (
+          <div className="bg-white rounded-lg shadow-lg p-6 mb-8">
+            <WildCardManager 
+              gameId={params.id}
+              players={players}
+              currentQuestion={currentQuestion}
+            />
+          </div>
+        )}
 
         {/* All Questions Preview */}
         <div className="bg-white rounded-lg shadow-lg p-6">

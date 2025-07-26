@@ -172,8 +172,8 @@ export default function EditQuestionnairePage() {
       return;
     }
 
-    if (questions.length >= 15) {
-      setError('No se pueden agregar más de 15 preguntas');
+    if (questions.length >= 20) {
+      setError('No se pueden agregar más de 20 preguntas');
       return;
     }
 
@@ -408,12 +408,12 @@ export default function EditQuestionnairePage() {
           </div>
         )}
 
-        {questions.length >= 15 && !isEditing && (
+        {questions.length >= 20 && !isEditing && (
           <div className="bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded mb-6">
-            Has alcanzado el límite de 15 preguntas.
+            Has alcanzado el límite de 20 preguntas.
           </div>
         )}
-        {(questions.length < 15 || isEditing) && (
+        {(questions.length < 20 || isEditing) && (
           <form onSubmit={handleAddQuestion} className="mb-8 bg-white shadow-md rounded px-8 pt-6 pb-8 mb-4" id="questionForm">
             <h2 className="text-xl font-semibold mb-4">
               {isEditing ? 'Editar Pregunta' : 'Agregar Nueva Pregunta'}
