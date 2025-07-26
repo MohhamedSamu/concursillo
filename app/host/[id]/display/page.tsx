@@ -1,222 +1,354 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
-import { supabase, type GameRoom, type Question, type GamePhase } from '@/lib/supabase';
+import { useState, useEffect } from 'react';
+import { supabase } from '@/lib/supabase';
+import pusherClient, { GAME_EVENTS, getGameChannel } from '@/lib/pusher';
 
-export default function GameDisplay() {
-  const params = useParams();
-  const [gameRoom, setGameRoom] = useState<GameRoom | null>(null);
-  const [currentQuestion, setCurrentQuestion] = useState<Question | null>(null);
+export default function DisplayView({ params }: { params: { id: string } }) {
+  const [gameRoom, setGameRoom] = useState<any>(null);
+  const [currentQuestion, setCurrentQuestion] = useState<any>(null);
+  const [players, setPlayers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [gameEnded, setGameEnded] = useState(false);
+  const [leaderboard, setLeaderboard] = useState<any[]>([]);
 
   useEffect(() => {
-    console.log('Setting up display view for game room:', params.id);
-    loadInitialData();
-    const cleanup = setupRealtimeSubscriptions();
-    return cleanup;
+    loadGameData();
+    const displayChannel = `${getGameChannel(params.id)}_display`;
+    setupPusherSubscription(displayChannel);
+
+    return () => {
+      const displayChannel = `${getGameChannel(params.id)}_display`;
+      pusherClient.unsubscribe(displayChannel);
+    };
   }, [params.id]);
 
-  async function loadInitialData() {
-    try {
-      console.log('Loading initial game data...');
+  function setupPusherSubscription(channelName: string) {
+    console.log('Display: Setting up subscription to channel:', channelName);
+    const channel = pusherClient.subscribe(channelName);
+
+    // Handle phase changes
+    channel.bind(GAME_EVENTS.GAME_PHASE_CHANGED, async (data: any) => {
+      console.log('Display: Game phase changed:', data);
       
-      // Load game room
-      const { data: room, error: roomError } = await supabase
+      // If phase changed, we need to reload the game data to get the latest question
+      const { data: gameRoomData, error: gameRoomError } = await supabase
         .from('game_rooms')
-        .select('*')
+        .select(`
+          *,
+          current_question:current_question_id(*)
+        `)
         .eq('id', params.id)
         .single();
 
-      if (roomError) throw roomError;
-      console.log('Loaded game room:', room);
-      setGameRoom(room);
-
-      // Load current question if available
-      if (room.current_question_id) {
-        const { data: question, error: questionError } = await supabase
-          .from('questions')
-          .select('*')
-          .eq('id', room.current_question_id)
-          .single();
-        
-        if (questionError) throw questionError;
-        setCurrentQuestion(question);
+      if (gameRoomError) {
+        console.error('Error reloading game data:', gameRoomError);
+        return;
       }
+
+      // Load the current game question to get the randomized answers
+      const { data: currentGameQuestion, error: gameQuestionError } = await supabase
+        .from('game_questions')
+        .select('*')
+        .eq('game_room_id', params.id)
+        .eq('question_id', gameRoomData.current_question_id)
+        .single();
+
+      if (gameQuestionError) {
+        console.error('Error loading game question:', gameQuestionError);
+        return;
+      }
+
+      // Merge the original question with the game question data
+      const mergedQuestion = {
+        ...gameRoomData.current_question,
+        answer_a: currentGameQuestion.answer_a,
+        answer_b: currentGameQuestion.answer_b,
+        answer_c: currentGameQuestion.answer_c,
+        answer_d: currentGameQuestion.answer_d,
+        correct_answer_letter: currentGameQuestion.correct_answer_letter
+      };
+
+      setGameRoom(gameRoomData);
+      setCurrentQuestion(mergedQuestion);
+
+      // Also reload players to get latest scores
+      const { data: playersData, error: playersError } = await supabase
+        .from('players')
+        .select('*')
+        .eq('game_room_id', params.id)
+        .order('score', { ascending: false });
+
+      if (!playersError && playersData) {
+        setPlayers(playersData);
+      }
+    });
+
+    // Handle player updates
+    channel.bind(GAME_EVENTS.PLAYER_JOINED, (player: any) => {
+      console.log('Display: Player joined:', player);
+      setPlayers(current => [...current, player]);
+    });
+
+    channel.bind(GAME_EVENTS.PLAYER_LEFT, (playerId: string) => {
+      console.log('Display: Player left:', playerId);
+      setPlayers(current => current.filter(p => p.id !== playerId));
+    });
+
+    // Handle game end
+    channel.bind(GAME_EVENTS.GAME_ENDED, async (data: any) => {
+      console.log('Display: Game ended:', data);
+      setGameEnded(true);
+      
+      // Load final leaderboard
+      const { data: leaderboardData, error: leaderboardError } = await supabase
+        .from('players')
+        .select('id, name, score')
+        .eq('game_room_id', params.id)
+        .order('score', { ascending: false });
+
+      if (!leaderboardError && leaderboardData) {
+        setLeaderboard(leaderboardData);
+      }
+    });
+
+    return () => {
+      channel.unbind_all();
+      pusherClient.unsubscribe(channelName);
+    };
+  }
+
+  async function loadGameData() {
+    try {
+      setLoading(true);
+      
+      // Load game room and current question
+      const { data: gameRoomData, error: gameRoomError } = await supabase
+        .from('game_rooms')
+        .select(`
+          *,
+          current_question:current_question_id(*)
+        `)
+        .eq('id', params.id)
+        .single();
+
+      if (gameRoomError) throw gameRoomError;
+      
+      setGameRoom(gameRoomData);
+      setCurrentQuestion(gameRoomData.current_question);
+
+      // Load the current game question to get the randomized answers
+      const { data: currentGameQuestion, error: gameQuestionError } = await supabase
+        .from('game_questions')
+        .select('*')
+        .eq('game_room_id', params.id)
+        .eq('question_id', gameRoomData.current_question_id)
+        .single();
+
+      if (gameQuestionError) throw gameQuestionError;
+
+      // Merge the original question with the game question data
+      const mergedQuestion = {
+        ...gameRoomData.current_question,
+        answer_a: currentGameQuestion.answer_a,
+        answer_b: currentGameQuestion.answer_b,
+        answer_c: currentGameQuestion.answer_c,
+        answer_d: currentGameQuestion.answer_d,
+        correct_answer_letter: currentGameQuestion.correct_answer_letter
+      };
+
+      setCurrentQuestion(mergedQuestion);
+
+      // Load players
+      const { data: playersData, error: playersError } = await supabase
+        .from('players')
+        .select('*')
+        .eq('game_room_id', params.id)
+        .order('score', { ascending: false });
+
+      if (playersError) throw playersError;
+      setPlayers(playersData || []);
+
     } catch (err) {
-      console.error('Error loading initial data:', err);
-      setError(err instanceof Error ? err.message : 'Error al cargar los datos del juego');
+      console.error('Error loading game data:', err);
+      setError(err instanceof Error ? err.message : 'Error loading game data');
     } finally {
       setLoading(false);
     }
   }
 
-  function setupRealtimeSubscriptions() {
-    console.log('Setting up real-time subscriptions...');
-    
-    // Subscribe to game room changes
-    const gameRoomSubscription = supabase
-      .channel('game_room_display_changes')
-      .on('postgres_changes', {
-        event: 'UPDATE',
-        schema: 'public',
-        table: 'game_rooms',
-        filter: `id=eq.${params.id}`
-      }, async (payload) => {
-        console.log('Game room update received:', payload);
-        const newGameRoom = payload.new as GameRoom;
-        setGameRoom(newGameRoom);
-
-        // If question changed, fetch the new question
-        if (newGameRoom.current_question_id !== gameRoom?.current_question_id) {
-          console.log('Fetching new question:', newGameRoom.current_question_id);
-          const { data: question, error } = await supabase
-            .from('questions')
-            .select('*')
-            .eq('id', newGameRoom.current_question_id)
-            .single();
-          
-          if (error) {
-            console.error('Error fetching question:', error);
-          } else {
-            console.log('New question loaded:', question);
-            setCurrentQuestion(question);
-          }
-        }
-      })
-      .subscribe((status) => {
-        console.log('Game room subscription status:', status);
-      });
-
-    return () => {
-      console.log('Cleaning up subscription...');
-      gameRoomSubscription.unsubscribe();
-    };
-  }
-
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-indigo-900 to-purple-900 flex items-center justify-center">
-        <div className="text-white text-2xl">Cargando...</div>
+      <div className="min-h-screen flex items-center justify-center bg-black text-white">
+        <div className="text-2xl">Cargando...</div>
       </div>
     );
   }
 
-  if (error || !gameRoom) {
+  if (error) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-indigo-900 to-purple-900 flex items-center justify-center">
-        <div className="text-red-400 text-2xl">{error || 'Sala de juego no encontrada'}</div>
+      <div className="min-h-screen flex items-center justify-center bg-black text-white">
+        <div className="text-2xl text-red-500">{error}</div>
       </div>
     );
   }
 
-  // Determine what to show based on current phase
+  if (!gameRoom || !currentQuestion) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-black text-white">
+        <div className="text-center">
+          <div className="text-6xl mb-6">🎯</div>
+          <div className="text-4xl font-bold mb-4">¡Preparados!</div>
+          <div className="text-2xl text-gray-400">Esperando la primera pregunta...</div>
+        </div>
+      </div>
+    );
+  }
+
   const showQuestion = gameRoom.current_phase !== 'hidden';
   const showAnswerA = ['answer_a', 'answer_b', 'answer_c', 'answer_d', 'locked', 'reveal'].includes(gameRoom.current_phase);
   const showAnswerB = ['answer_b', 'answer_c', 'answer_d', 'locked', 'reveal'].includes(gameRoom.current_phase);
   const showAnswerC = ['answer_c', 'answer_d', 'locked', 'reveal'].includes(gameRoom.current_phase);
   const showAnswerD = ['answer_d', 'locked', 'reveal'].includes(gameRoom.current_phase);
-  const showCorrect = gameRoom.current_phase === 'reveal';
+  const isRevealed = gameRoom.current_phase === 'reveal';
+  const isLocked = gameRoom.current_phase === 'locked';
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-900 to-purple-900 p-8 text-white">
-      <div className="max-w-6xl mx-auto">
-        {/* Header */}
-        <div className="text-center mb-12">
-          <h1 className="text-6xl font-bold mb-4">CONCURSILLO</h1>
-          <div className="text-2xl opacity-80">Código de Sala: {gameRoom.code}</div>
-        </div>
+  // Show leaderboard if game ended
+  if (gameEnded) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-purple-900 to-black text-white p-8">
+        <div className="max-w-4xl mx-auto mt-20">
+          <div className="text-center mb-12">
+            <div className="text-6xl mb-6">🏆</div>
+            <h1 className="text-5xl font-bold mb-4">¡Juego Terminado!</h1>
+            <h2 className="text-3xl text-gray-300">Resultados Finales</h2>
+          </div>
 
-        {/* Question Section */}
-        {currentQuestion && (
-          <div className="bg-white/10 backdrop-blur-sm rounded-3xl p-8 mb-8">
-            {showQuestion ? (
-              <div className="text-center">
-                <h2 className="text-4xl font-bold mb-8">{currentQuestion.question_text}</h2>
-                
-                {/* Answers Grid */}
-                <div className="grid grid-cols-2 gap-6 max-w-4xl mx-auto">
-                  {/* Answer A */}
-                  <div className={`p-6 rounded-2xl transition-all duration-500 ${
-                    showAnswerA 
-                      ? showCorrect && currentQuestion.correct_answer === currentQuestion.wrong_answer_1
-                        ? 'bg-green-600 transform scale-105'
-                        : 'bg-blue-600'
-                      : 'bg-gray-500/30'
-                  }`}>
-                    <div className="text-2xl font-bold mb-2">A</div>
-                    <div className="text-xl">
-                      {showAnswerA ? currentQuestion.wrong_answer_1 : '???'}
-                    </div>
-                  </div>
-
-                  {/* Answer B */}
-                  <div className={`p-6 rounded-2xl transition-all duration-500 ${
-                    showAnswerB 
-                      ? showCorrect && currentQuestion.correct_answer === currentQuestion.wrong_answer_2
-                        ? 'bg-green-600 transform scale-105'
-                        : 'bg-red-600'
-                      : 'bg-gray-500/30'
-                  }`}>
-                    <div className="text-2xl font-bold mb-2">B</div>
-                    <div className="text-xl">
-                      {showAnswerB ? currentQuestion.wrong_answer_2 : '???'}
-                    </div>
-                  </div>
-
-                  {/* Answer C */}
-                  <div className={`p-6 rounded-2xl transition-all duration-500 ${
-                    showAnswerC 
-                      ? showCorrect && currentQuestion.correct_answer === currentQuestion.wrong_answer_3
-                        ? 'bg-green-600 transform scale-105'
-                        : 'bg-yellow-600'
-                      : 'bg-gray-500/30'
-                  }`}>
-                    <div className="text-2xl font-bold mb-2">C</div>
-                    <div className="text-xl">
-                      {showAnswerC ? currentQuestion.wrong_answer_3 : '???'}
-                    </div>
-                  </div>
-
-                  {/* Answer D */}
-                  <div className={`p-6 rounded-2xl transition-all duration-500 ${
-                    showAnswerD 
-                      ? 'bg-green-600 transform scale-105'
-                      : 'bg-gray-500/30'
-                  }`}>
-                    <div className="text-2xl font-bold mb-2">D</div>
-                    <div className="text-xl">
-                      {showAnswerD ? currentQuestion.correct_answer : '???'}
-                      {showCorrect && ' ✓'}
-                    </div>
+          <div className="space-y-6">
+            {leaderboard.map((player, index) => (
+              <div
+                key={player.id}
+                className={`flex items-center justify-between p-6 rounded-lg text-2xl ${
+                  index === 0 ? 'bg-yellow-500 text-black' :
+                  index === 1 ? 'bg-gray-400 text-black' :
+                  index === 2 ? 'bg-orange-600 text-white' :
+                  'bg-blue-800 text-white'
+                }`}
+              >
+                <div className="flex items-center">
+                  <span className="text-4xl mr-4">
+                    {index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`}
+                  </span>
+                  <span className="font-bold">{player.name}</span>
+                </div>
+                <div className="text-right">
+                  <div className="text-3xl font-bold">{player.score} puntos</div>
+                  <div className="text-lg">
+                    {index === 0 ? '¡GANADOR!' : 
+                     player.score === leaderboard[0]?.score ? '¡EMPATE!' : 'Participante'}
                   </div>
                 </div>
               </div>
-            ) : (
-              <div className="text-center">
-                <div className="text-6xl mb-4">🤔</div>
-                <div className="text-3xl">Preparando la siguiente pregunta...</div>
-              </div>
-            )}
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-blue-900 to-black text-white p-8">
+      {/* Scoreboard */}
+      <div className="absolute top-4 right-4 bg-black bg-opacity-50 p-4 rounded-lg">
+        <h3 className="text-lg font-bold mb-2">Puntuaciones</h3>
+        <div className="space-y-2">
+          {players.map(player => (
+            <div key={player.id} className="flex justify-between">
+              <span>{player.name}</span>
+              <span className="ml-4 font-bold">{player.score}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="max-w-4xl mx-auto mt-20">
+        {/* Question */}
+        {showQuestion ? (
+          <div className="text-4xl font-bold mb-12 text-center">
+            {currentQuestion.question_text}
+          </div>
+        ) : (
+          <div className="text-4xl font-bold mb-12 text-center">
+            Preparados...
           </div>
         )}
 
-        {/* Phase Indicator */}
-        <div className="text-center">
-          <div className="bg-white/20 backdrop-blur-sm rounded-full px-6 py-3 inline-block">
-            <div className="text-lg font-medium">
-              {gameRoom.current_phase === 'hidden' && 'Preparando pregunta...'}
-              {gameRoom.current_phase === 'question' && 'Mostrando pregunta'}
-              {gameRoom.current_phase === 'answer_a' && 'Mostrando respuesta A'}
-              {gameRoom.current_phase === 'answer_b' && 'Mostrando respuesta B'}
-              {gameRoom.current_phase === 'answer_c' && 'Mostrando respuesta C'}
-              {gameRoom.current_phase === 'answer_d' && 'Mostrando respuesta D'}
-              {gameRoom.current_phase === 'locked' && 'Respuestas bloqueadas'}
-              {gameRoom.current_phase === 'reveal' && '¡Respuesta correcta revelada!'}
+        {/* Answers Grid */}
+        <div className="grid grid-cols-2 gap-8 mt-12">
+          {/* Answer A */}
+          <div className={`transform transition-all duration-500 ${showAnswerA ? 'translate-y-0 opacity-100' : 'translate-y-10 opacity-0'}`}>
+            <div className={`p-6 rounded-lg text-2xl ${
+              isRevealed && currentQuestion.correct_answer_letter === 'A'
+                ? 'bg-green-600' 
+                : 'bg-blue-800'
+            }`}>
+              <span className="font-bold">A:</span> {currentQuestion.answer_a}
+              {isRevealed && currentQuestion.correct_answer_letter === 'A' && (
+                <span className="ml-2">✓</span>
+              )}
+            </div>
+          </div>
+
+          {/* Answer B */}
+          <div className={`transform transition-all duration-500 ${showAnswerB ? 'translate-y-0 opacity-100' : 'translate-y-10 opacity-0'}`}>
+            <div className={`p-6 rounded-lg text-2xl ${
+              isRevealed && currentQuestion.correct_answer_letter === 'B'
+                ? 'bg-green-600' 
+                : 'bg-blue-800'
+            }`}>
+              <span className="font-bold">B:</span> {currentQuestion.answer_b}
+              {isRevealed && currentQuestion.correct_answer_letter === 'B' && (
+                <span className="ml-2">✓</span>
+              )}
+            </div>
+          </div>
+
+          {/* Answer C */}
+          <div className={`transform transition-all duration-500 ${showAnswerC ? 'translate-y-0 opacity-100' : 'translate-y-10 opacity-0'}`}>
+            <div className={`p-6 rounded-lg text-2xl ${
+              isRevealed && currentQuestion.correct_answer_letter === 'C'
+                ? 'bg-green-600' 
+                : 'bg-blue-800'
+            }`}>
+              <span className="font-bold">C:</span> {currentQuestion.answer_c}
+              {isRevealed && currentQuestion.correct_answer_letter === 'C' && (
+                <span className="ml-2">✓</span>
+              )}
+            </div>
+          </div>
+
+          {/* Answer D */}
+          <div className={`transform transition-all duration-500 ${showAnswerD ? 'translate-y-0 opacity-100' : 'translate-y-10 opacity-0'}`}>
+            <div className={`p-6 rounded-lg text-2xl ${
+              isRevealed && currentQuestion.correct_answer_letter === 'D'
+                ? 'bg-green-600' 
+                : 'bg-blue-800'
+            }`}>
+              <span className="font-bold">D:</span> {currentQuestion.answer_d}
+              {isRevealed && currentQuestion.correct_answer_letter === 'D' && (
+                <span className="ml-2">✓</span>
+              )}
             </div>
           </div>
         </div>
+
+        {/* Phase Indicator */}
+        {isLocked && (
+          <div className="text-3xl text-center mt-12 text-yellow-500">
+            ¡Respuestas Bloqueadas!
+          </div>
+        )}
       </div>
     </div>
   );

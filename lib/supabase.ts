@@ -12,8 +12,18 @@ if (!supabaseAnonKey) {
   throw new Error('Missing NEXT_PUBLIC_SUPABASE_ANON_KEY environment variable');
 }
 
-// Create Supabase client with realtime enabled
+// Create Supabase client with proper headers and realtime config
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    persistSession: false // Since we don't need auth for this game
+  },
+  global: {
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Prefer': 'return=minimal'
+    }
+  },
   realtime: {
     params: {
       eventsPerSecond: 10
@@ -21,56 +31,47 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   }
 });
 
-// Enable realtime for specific tables
-supabase.channel('schema-db-changes')
-  .on('postgres_changes', {
-    event: '*',
-    schema: 'public',
-    table: 'game_rooms'
-  }, () => {})
-  .on('postgres_changes', {
-    event: '*',
-    schema: 'public',
-    table: 'players'
-  }, () => {})
-  .subscribe();
+// Game room status types
+export type GameStatus = 'waiting' | 'in_progress' | 'finished';
 
-// Type definitions
+// Game phases
+export type GamePhase = 'hidden' | 'question' | 'answer_a' | 'answer_b' | 'answer_c' | 'answer_d' | 'locked' | 'reveal' | 'finished';
+
+// Database types
 export interface Questionnaire {
-  id: string; // UUID
+  id: string;
   title: string;
   created_at: string;
   updated_at: string;
 }
 
 export interface Question {
-  id: string; // UUID
-  questionnaire_id: string; // UUID
+  id: string;
+  questionnaire_id: string;
+  order_number: number;
   question_text: string;
   correct_answer: string;
   wrong_answer_1: string;
   wrong_answer_2: string;
   wrong_answer_3: string;
-  order_number: number;
   created_at: string;
   updated_at: string;
 }
 
-export type GamePhase = 'hidden' | 'question' | 'answer_a' | 'answer_b' | 'answer_c' | 'answer_d' | 'locked' | 'reveal';
-
 export interface GameRoom {
-  id: string; // UUID
+  id: string;
+  questionnaire_id: string;
   code: string;
-  questionnaire_id: string; // UUID
+  status: GameStatus;
   current_phase: GamePhase;
-  current_question_id: string | null; // UUID of current question
+  current_question_id: string | null;
   created_at: string;
   updated_at: string;
 }
 
 export interface Player {
-  id: string; // UUID
-  game_room_id: string; // UUID
+  id: string;
+  game_room_id: string;
   name: string;
   score: number;
   status: string;

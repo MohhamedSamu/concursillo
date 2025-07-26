@@ -1,220 +1,250 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useParams, useRouter } from 'next/navigation';
-import { supabase, type GameRoom } from '@/lib/supabase';
+import { useRouter } from 'next/navigation';
+import { supabase } from '@/lib/supabase';
+import pusherClient, { GAME_EVENTS, getGameChannel } from '@/lib/pusher';
 
-export default function JoinGameWithCode() {
-  const params = useParams();
+export default function JoinGame({ params }: { params: { code: string } }) {
   const router = useRouter();
-  const code = params.code as string;
-  const [name, setName] = useState('');
-  const [gameRoom, setGameRoom] = useState<GameRoom | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [joining, setJoining] = useState(false);
-  const [joined, setJoined] = useState(false);
-  const [playerId, setPlayerId] = useState<string | null>(null);
+  const [playerName, setPlayerName] = useState('');
+  const [gameRoom, setGameRoom] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isJoining, setIsJoining] = useState(false);
+  const [hasJoined, setHasJoined] = useState(false);
 
   useEffect(() => {
-    checkGameRoom();
-    return () => {
-      // Cleanup subscription on unmount
-      if (gameRoom?.id) {
-        supabase.channel(`game_room_${gameRoom.id}`).unsubscribe();
-      }
-    };
-  }, [code]);
+    // Find game room by code
+    async function findGameRoom() {
+      try {
+        const { data, error } = await supabase
+          .from('game_rooms')
+          .select('*')
+          .eq('code', params.code)
+          .single();
 
-  // Set up real-time subscription when player joins successfully
-  useEffect(() => {
-    if (!gameRoom?.id || !playerId) return;
-
-    const channel = supabase
-      .channel(`game_room_${gameRoom.id}`)
-      .on('postgres_changes', {
-        event: 'UPDATE',
-        schema: 'public',
-        table: 'game_rooms',
-        filter: `id=eq.${gameRoom.id}`
-      }, (payload: any) => {
-        console.log('Game room update:', payload);
-        if (payload.new.status === 'in_progress') {
-          router.push(`/play/${playerId}`);
+        if (error) throw error;
+        if (!data) throw new Error('Sala de juego no encontrada');
+        
+        console.log('Found game room:', data);
+        setGameRoom(data);
+        
+        // If already joined, subscribe to game events
+        if (hasJoined) {
+          subscribeToGameEvents(data.id);
         }
-      })
-      .subscribe();
-
-    return () => {
-      channel.unsubscribe();
-    };
-  }, [gameRoom?.id, playerId]);
-
-  async function checkGameRoom() {
-    try {
-      const { data, error } = await supabase
-        .from('game_rooms')
-        .select('*')
-        .eq('code', code.toUpperCase())
-        .single();
-
-      if (error) throw error;
-      
-      if (data.status !== 'waiting') {
-        throw new Error('Esta sala ya no está disponible');
+      } catch (err) {
+        console.error('Error finding game room:', err);
+        setError('Sala de juego no encontrada');
       }
-
-      setGameRoom(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Sala no encontrada');
-      setTimeout(() => {
-        router.push('/join');
-      }, 3000);
-    } finally {
-      setLoading(false);
     }
+
+    findGameRoom();
+  }, [params.code, hasJoined]);
+
+  function subscribeToGameEvents(gameRoomId: string) {
+    const channel = pusherClient.subscribe(getGameChannel(gameRoomId));
+
+    channel.bind(GAME_EVENTS.GAME_STARTED, () => {
+      // Store the current player name before redirecting
+      sessionStorage.setItem(`current_player_name_${gameRoomId}`, playerName.trim());
+      // Redirect to the game play page
+      router.push(`/play/${gameRoomId}`);
+    });
+
+    // Cleanup subscription when component unmounts
+    return () => {
+      channel.unbind_all();
+      pusherClient.unsubscribe(getGameChannel(gameRoomId));
+    };
   }
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleJoin(e: React.FormEvent) {
     e.preventDefault();
-    if (!gameRoom) return;
+    if (!gameRoom || !playerName.trim()) return;
 
-    if (!name.trim()) {
-      setError('Por favor ingresa tu nombre');
-      return;
-    }
+    setIsJoining(true);
+    setError(null);
 
-    setJoining(true);
     try {
-      // Check if name is already taken in this room
+      console.log('Attempting to join game room:', gameRoom.id);
+
+      // Check if name is already taken
       const { data: existingPlayers, error: checkError } = await supabase
         .from('players')
-        .select('id')
+        .select('name')
         .eq('game_room_id', gameRoom.id)
-        .eq('name', name.trim());
+        .eq('name', playerName.trim());
 
-      if (checkError) throw checkError;
-      
-      if (existingPlayers && existingPlayers.length > 0) {
-        throw new Error('Este nombre ya está en uso en esta sala');
+      if (checkError) {
+        console.error('Error checking existing players:', checkError);
+        throw checkError;
       }
 
-      // Create player
-      const { data: player, error: createError } = await supabase
+      if (existingPlayers && existingPlayers.length > 0) {
+        throw new Error('Este nombre ya está en uso');
+      }
+
+      const newPlayerData = {
+        game_room_id: gameRoom.id,
+        name: playerName.trim(),
+        score: 0,
+        status: 'waiting',
+        current_answer: null
+      };
+
+      console.log('Creating new player with data:', newPlayerData);
+
+      // First, create the player
+      const { data: insertResult, error: insertError } = await supabase
         .from('players')
-        .insert([{
-          game_room_id: gameRoom.id,
-          name: name.trim(),
-          status: 'waiting',
-          score: 0
-        }])
-        .select()
-        .single();
+        .insert(newPlayerData)
+        .select();
 
-      if (createError) throw createError;
-      if (!player) throw new Error('Error al crear el jugador');
+      if (insertError) {
+        console.error('Error creating player:', insertError);
+        throw new Error(`Error al crear el jugador: ${insertError.message}`);
+      }
 
-      setPlayerId(player.id);
-      setJoined(true);
-      setError('');
+      if (!insertResult || insertResult.length === 0) {
+        console.error('No player data returned after insert');
+        
+        // Try to fetch the newly created player
+        const { data: newPlayer, error: fetchError } = await supabase
+          .from('players')
+          .select('*')
+          .eq('game_room_id', gameRoom.id)
+          .eq('name', playerName.trim())
+          .single();
+
+        if (fetchError || !newPlayer) {
+          console.error('Error fetching created player:', fetchError);
+          throw new Error('No se pudo verificar la creación del jugador');
+        }
+
+        console.log('Retrieved player after creation:', newPlayer);
+        
+        // Store player name in sessionStorage
+        sessionStorage.setItem(`current_player_name_${gameRoom.id}`, playerName.trim());
+        
+        // Store player ID with name-specific key
+        const storageKey = `game_${gameRoom.id}_player_${playerName.trim()}_id`;
+        localStorage.setItem(storageKey, newPlayer.id);
+
+        // Trigger Pusher event for player joined
+        const response = await fetch('/api/pusher/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            channel: getGameChannel(gameRoom.id),
+            event: GAME_EVENTS.PLAYER_JOINED,
+            data: newPlayer
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          console.error('Failed to trigger Pusher event:', errorData);
+          throw new Error('Failed to notify host about join');
+        }
+
+        setHasJoined(true);
+        // Subscribe to game events after joining
+        subscribeToGameEvents(gameRoom.id);
+        return;
+      }
+
+      const newPlayer = insertResult[0];
+      console.log('Created new player:', newPlayer);
+
+      // Store player name in sessionStorage
+      sessionStorage.setItem(`current_player_name_${gameRoom.id}`, playerName.trim());
+      
+      // Store player ID with name-specific key
+      const storageKey = `game_${gameRoom.id}_player_${playerName.trim()}_id`;
+      localStorage.setItem(storageKey, newPlayer.id);
+
+      // Trigger Pusher event for player joined
+      const response = await fetch('/api/pusher/trigger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channel: getGameChannel(gameRoom.id),
+          event: GAME_EVENTS.PLAYER_JOINED,
+          data: newPlayer
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Failed to trigger Pusher event:', errorData);
+        throw new Error('Failed to notify host about join');
+      }
+
+      const result = await response.json();
+      console.log('Pusher event triggered:', result);
+
+      setHasJoined(true);
+      // Subscribe to game events after joining
+      subscribeToGameEvents(gameRoom.id);
     } catch (err) {
-      console.error('Join error:', err);
+      console.error('Error joining game:', err);
       setError(err instanceof Error ? err.message : 'Error al unirse al juego');
     } finally {
-      setJoining(false);
+      setIsJoining(false);
     }
-  }
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
-        <div className="text-xl">Verificando sala...</div>
-      </div>
-    );
   }
 
   if (error) {
     return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
-          <div className="text-red-600 mb-4">{error}</div>
-          <div className="text-gray-600">Redirigiendo a la página principal...</div>
+          <h1 className="text-2xl font-bold text-red-600 mb-4">Error</h1>
+          <p className="text-gray-700">{error}</p>
         </div>
       </div>
     );
   }
 
-  if (joined && playerId) {
+  if (hasJoined) {
     return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
-          <div className="text-2xl font-bold mb-4">¡Te has unido exitosamente!</div>
-          <div className="text-xl mb-8">Esperando a que el anfitrión inicie el juego...</div>
-          <div className="animate-bounce text-4xl">🎮</div>
+          <h1 className="text-2xl font-bold text-green-600 mb-4">¡Te has unido al juego!</h1>
+          <p className="text-gray-700">Esperando a que el anfitrión inicie el juego...</p>
+          <p className="text-gray-500 mt-2">Tu nombre: {playerName}</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-100 py-6 flex flex-col justify-center sm:py-12">
-      <div className="relative py-3 sm:max-w-xl sm:mx-auto">
-        <div className="absolute inset-0 bg-gradient-to-r from-indigo-600 to-purple-600 shadow-lg transform -skew-y-6 sm:skew-y-0 sm:-rotate-6 sm:rounded-3xl"></div>
-        <div className="relative px-4 py-10 bg-white shadow-lg sm:rounded-3xl sm:p-20">
-          <div className="max-w-md mx-auto">
-            <div className="divide-y divide-gray-200">
-              <div className="py-8 text-base leading-6 space-y-4 text-gray-700 sm:text-lg sm:leading-7">
-                <h2 className="text-2xl font-bold mb-8 text-center text-gray-900">
-                  Unirse a la Sala
-                </h2>
-
-                <div className="text-center mb-8">
-                  <p className="text-xl font-semibold mb-2">Código de la sala</p>
-                  <p className="text-4xl font-bold text-indigo-600">{code}</p>
-                </div>
-
-                <form onSubmit={handleSubmit} className="space-y-6">
-                  <div>
-                    <label htmlFor="name" className="block text-sm font-medium text-gray-700">
-                      Tu Nombre
-                    </label>
-                    <div className="mt-1">
-                      <input
-                        type="text"
-                        name="name"
-                        id="name"
-                        value={name}
-                        onChange={(e) => {
-                          setError('');
-                          setName(e.target.value);
-                        }}
-                        className="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
-                        placeholder="Ingresa tu nombre"
-                        maxLength={20}
-                        disabled={joining}
-                      />
-                    </div>
-                    {error && (
-                      <p className="mt-2 text-sm text-red-600">
-                        {error}
-                      </p>
-                    )}
-                  </div>
-
-                  <div>
-                    <button
-                      type="submit"
-                      disabled={joining}
-                      className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {joining ? 'Uniéndose...' : 'Unirse al Juego'}
-                    </button>
-                  </div>
-                </form>
-              </div>
-            </div>
+    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="max-w-md w-full px-6 py-8 bg-white rounded-lg shadow-md">
+        <h1 className="text-2xl font-bold text-center mb-6">Unirse al Juego</h1>
+        <form onSubmit={handleJoin}>
+          <div className="mb-4">
+            <label htmlFor="playerName" className="block text-sm font-medium text-gray-700 mb-2">
+              Tu Nombre
+            </label>
+            <input
+              type="text"
+              id="playerName"
+              value={playerName}
+              onChange={(e) => setPlayerName(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              required
+              disabled={isJoining}
+            />
           </div>
-        </div>
+          <button
+            type="submit"
+            className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50"
+            disabled={isJoining || !playerName.trim()}
+          >
+            {isJoining ? 'Uniéndose...' : 'Unirse al Juego'}
+          </button>
+        </form>
       </div>
     </div>
   );

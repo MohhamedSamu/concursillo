@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { supabase, type Questionnaire } from '@/lib/supabase';
+import { useRouter } from 'next/navigation';
 
 export default function QuestionnaireList() {
   const [questionnaires, setQuestionnaires] = useState<Questionnaire[]>([]);
@@ -48,58 +49,43 @@ export default function QuestionnaireList() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex justify-between items-center">
-        <h2 className="text-xl font-bold">Cuestionarios</h2>
-        <Link
-          href="/questionnaires/new"
-          className="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700"
-        >
-          Nuevo Cuestionario
-        </Link>
-      </div>
-
-      {error && (
-        <div className="bg-red-50 text-red-600 p-4 rounded">
-          {error}
-        </div>
-      )}
-
-      {questionnaires.length === 0 ? (
-        <div className="text-center text-gray-500">
-          No hay cuestionarios aún
-        </div>
-      ) : (
-        <div className="grid gap-4">
-          {questionnaires.map((questionnaire) => (
-            <div
-              key={questionnaire.id}
-              className="bg-white p-4 rounded shadow"
-            >
-              <div className="flex justify-between items-center">
-                <h3 className="text-lg font-medium">{questionnaire.title}</h3>
-                <div className="flex space-x-2">
-                  <Link
-                    href={`/questionnaires/${questionnaire.id}/edit`}
-                    className="text-indigo-600 hover:text-indigo-800"
-                  >
-                    Editar
-                  </Link>
-                  <button
-                    onClick={() => deleteQuestionnaire(questionnaire.id)}
-                    className="text-red-600 hover:text-red-800"
-                  >
-                    Eliminar
-                  </button>
-                </div>
+    <div className="container mx-auto p-4">
+      <h1 className="text-2xl font-bold mb-4">Cuestionarios</h1>
+      <div className="grid gap-4">
+        {questionnaires.map((questionnaire) => (
+          <div key={questionnaire.id} className="bg-white p-4 rounded-lg shadow">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-semibold">{questionnaire.title}</h2>
+              <div className="flex gap-2">
+                <Link
+                  href={`/admin/questionnaires/${questionnaire.id}`}
+                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                >
+                  Editar
+                </Link>
+                <Link
+                  href={`/host/${questionnaire.id}`}
+                  className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
+                >
+                  Iniciar Juego
+                </Link>
+                <button
+                  onClick={() => deleteQuestionnaire(questionnaire.id)}
+                  className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+                >
+                  Eliminar
+                </button>
               </div>
-              <p className="text-sm text-gray-500 mt-1">
-                Creado el: {new Date(questionnaire.created_at).toLocaleDateString()}
-              </p>
             </div>
-          ))}
-        </div>
-      )}
+          </div>
+        ))}
+      </div>
+      <Link
+        href="/admin/questionnaires/new"
+        className="mt-4 inline-block px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
+      >
+        Crear Nuevo Cuestionario
+      </Link>
     </div>
   );
 } 
